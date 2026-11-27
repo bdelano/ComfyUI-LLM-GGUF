@@ -236,8 +236,14 @@ class LLMGenerate:
                 parts.append(delta)
                 pbar.update(1)
                 if PromptServer is not None:
-                    PromptServer.instance.send_sync(
-                        "llm_gguf.chunk", {"node": node_id, "chunk": delta})
+                    # Sent only to the client that queued this prompt (like
+                    # ComfyUI's own progress events), tagged with its prompt id.
+                    server = PromptServer.instance
+                    server.send_sync(
+                        "llm_gguf.chunk",
+                        {"node": node_id, "prompt_id": getattr(server, "last_prompt_id", None),
+                         "chunk": delta},
+                        getattr(server, "client_id", None))
         except mm.InterruptProcessingException:
             raise
         except Exception as e:
@@ -281,8 +287,8 @@ _REASONING_TAGS = [
     (r"<reasoning>", r"</reasoning>"),
 ]
 # Leftover control tokens once special tokens are rendered, e.g. Gemma's
-# <|channel>, <channel|>, <turn|>, or ChatML's <|im_end|>.
-_CONTROL_TOKEN = re.compile(r"<\|[A-Za-z_\"]*\|?>|<[A-Za-z_]+\|>")
+# <|channel>, <channel|>, <turn|>, ChatML's <|im_end|>, or a stray </s> / <eos>.
+_CONTROL_TOKEN = re.compile(r"<\|[A-Za-z_\"]*\|?>|<[A-Za-z_]+\|>|</?s>|<(?:bos|eos|pad|unk)>")
 
 
 def strip_reasoning(text):

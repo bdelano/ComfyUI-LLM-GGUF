@@ -21,7 +21,7 @@ new nodes when convenient. Old and new nodes use different model types
 `LLMGenerate` details:
 - Honors Interrupt / Clear Queue between tokens.
 - Streams each token over ComfyUI's websocket as a `llm_gguf.chunk` event
-  (`{node, chunk}`) for clients that want live text.
+  (`{node, prompt_id, chunk}`) for clients that want live text.
 - `unload_after` (default on) frees the LLM's VRAM when done; the next run
   reloads it automatically even though ComfyUI caches the loader node.
 - If the chat template has no system role, the system text is folded into the
@@ -37,6 +37,7 @@ new nodes when convenient. Old and new nodes use different model types
   node renders special tokens for that call, then strips them. With
   `strip_thinking` off, a thinking Gemma 4 model's reasoning runs straight
   into the answer with no markers. The `llm_gguf.chunk` websocket events
+  (`{node, prompt_id, chunk}`, sent only to the client that queued the prompt)
   always carry the raw text, reasoning included.
 
 ## Install
