@@ -1,5 +1,6 @@
-"""Gemma 4 GGUF text generation nodes for ComfyUI, backed by llama-cpp-python.
+"""GGUF LLM text generation nodes for ComfyUI, backed by llama-cpp-python.
 
+Works with any chat model llama.cpp supports (Gemma, Llama, Qwen, Mistral, ...).
 Loads a GGUF LLM from ComfyUI's ``models/LLM/`` folder and generates text with
 the chat template embedded in the GGUF. The model shares ComfyUI's queue (so
 text jobs wait behind image jobs instead of fighting them for VRAM) and honors
@@ -9,6 +10,7 @@ Interrupt / Clear Queue between tokens.
 import gc
 import logging
 import os
+import re
 
 import folder_paths
 import comfy.model_management as mm
@@ -36,12 +38,12 @@ else:
     folder_paths.folder_names_and_paths[LLM_FOLDER] = ([_default_llm_dir], set(GGUF_EXT))
 
 
-class GemmaModel:
-    """Handle passed between nodes (custom GEMMA_MODEL type).
+class GGUFModel:
+    """Handle passed between nodes (custom LLM_GGUF_MODEL type).
 
     Holds only the load parameters, not the Llama object itself: ComfyUI caches
     the loader's output, so after ``unload_after`` frees VRAM the loader won't
-    re-run on the next prompt. ``GemmaGenerate`` calls ``get()``, which reloads
+    re-run on the next prompt. ``LLMGenerate`` calls ``get()``, which reloads
     on demand.
     """
 
@@ -119,7 +121,7 @@ def _import_llama():
     return llama_cpp
 
 
-class GemmaGGUFLoader:
+class LLMGGUFLoader:
     @classmethod
     def INPUT_TYPES(cls):
         return {
@@ -137,29 +139,30 @@ class GemmaGGUFLoader:
             }
         }
 
-    RETURN_TYPES = ("GEMMA_MODEL",)
+    RETURN_TYPES = ("LLM_GGUF_MODEL",)
     RETURN_NAMES = ("model",)
     FUNCTION = "load"
-    CATEGORY = "text/gemma"
+    CATEGORY = "text/llm"
 
     def load(self, model, n_gpu_layers, n_ctx, flash_attn, swa_full=False, kv_cache_type="f16"):
         if kv_cache_type != "f16" and not flash_attn:
             raise ValueError("kv_cache_type q8_0/q4_0 requires flash_attn to be enabled.")
         path = folder_paths.get_full_path_or_raise(LLM_FOLDER, model)
-        handle = GemmaModel(path, model, n_gpu_layers, n_ctx, flash_attn, swa_full, kv_cache_type)
+        handle = GGUFModel(path, model, n_gpu_layers, n_ctx, flash_attn, swa_full, kv_cache_type)
         handle.get()  # load now so failures surface on the loader node
         return (handle,)
 
 
-class GemmaGenerate:
+class LLMGenerate:
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "model": ("GEMMA_MODEL",),
+                "model": ("LLM_GGUF_MODEL",),
                 "system": ("STRING", {"multiline": True, "default": ""}),
                 "prompt": ("STRING", {"multiline": True, "default": ""}),
-                "max_tokens": ("INT", {"default": 1024, "min": 1, "max": 32768}),
+                "max_tokens": ("INT", {"default": 32000, "min": 1, "max": 262144,
+                                       "tooltip": "Hard cap on generated tokens (reasoning included); output is cut off if reached. Also limited by n_ctx minus the prompt."}),
                 "temperature": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05}),
                 "top_p": ("FLOAT", {"default": 0.95, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "top_k": ("INT", {"default": 64, "min": 0, "max": 1000}),
@@ -168,6 +171,12 @@ class GemmaGenerate:
                 "unload_after": ("BOOLEAN", {"default": True,
                                              "tooltip": "Free the LLM's VRAM when done so the next image job has room."}),
             },
+            # Optional so API prompts saved before this input existed still validate.
+            "optional": {
+                "strip_thinking": ("BOOLEAN", {"default": True,
+                                               "tooltip": "Remove reasoning blocks (<think>...</think>, Gemma 4's "
+                                                          "thought channel, ...) from the output text."}),
+            },
             "hidden": {"unique_id": "UNIQUE_ID"},
         }
 
@@ -175,23 +184,31 @@ class GemmaGenerate:
     RETURN_NAMES = ("text",)
     FUNCTION = "generate"
     OUTPUT_NODE = True
-    CATEGORY = "text/gemma"
+    CATEGORY = "text/llm"
 
     def generate(self, model, system, prompt, max_tokens, temperature, top_p,
-                 top_k, repeat_penalty, seed, unload_after, unique_id=None):
+                 top_k, repeat_penalty, seed, unload_after, strip_thinking=True,
+                 unique_id=None):
         self._unique_id = unique_id
         llm = model.get()
 
         params = dict(max_tokens=max_tokens, temperature=temperature, top_p=top_p,
                       top_k=top_k, repeat_penalty=repeat_penalty, seed=seed)
+        restore = _render_special_tokens(llm) if strip_thinking else None
         try:
-            text = self._run(llm, self._messages(system, prompt, True), params)
-        except _SystemRoleRejected:
-            # Some chat templates have no system role; fold it into the user turn.
-            text = self._run(llm, self._messages(system, prompt, False), params)
+            try:
+                text = self._run(llm, self._messages(system, prompt, True), params)
+            except _SystemRoleRejected:
+                # Some chat templates have no system role; fold it into the user turn.
+                text = self._run(llm, self._messages(system, prompt, False), params)
         finally:
+            if restore:
+                restore()
             if unload_after:
                 _free_cached()
+
+        if strip_thinking:
+            text = strip_reasoning(text)
 
         return {"ui": {"text": [text]}, "result": (text,)}
 
@@ -234,12 +251,89 @@ class _SystemRoleRejected(Exception):
     pass
 
 
+def _render_special_tokens(llm):
+    """Make ``llm`` keep special tokens in generated text until the returned
+    restore function is called.
+
+    llama-cpp-python detokenizes completions with ``special=False``, which drops
+    control tokens. Some models (Gemma 4) mark reasoning only with control
+    tokens (``<|channel>thought ... <channel|>``), so without this the thought
+    text would be indistinguishable from the answer.
+    """
+    original = llm.detokenize
+
+    def detokenize(tokens, prev_tokens=None, special=False):
+        return original(tokens, prev_tokens=prev_tokens, special=True)
+
+    llm.detokenize = detokenize
+
+    def restore():
+        llm.__dict__.pop("detokenize", None)
+
+    return restore
+
+
+# Reasoning blocks, as (open, close) regex pairs.
+_REASONING_TAGS = [
+    (r"<\|channel>thought", r"<channel\|>"),   # Gemma 4
+    (r"<think>", r"</think>"),                 # Qwen3, DeepSeek R1, many fine-tunes
+    (r"<thinking>", r"</thinking>"),
+    (r"<reasoning>", r"</reasoning>"),
+]
+# Leftover control tokens once special tokens are rendered, e.g. Gemma's
+# <|channel>, <channel|>, <turn|>, or ChatML's <|im_end|>.
+_CONTROL_TOKEN = re.compile(r"<\|[A-Za-z_\"]*\|?>|<[A-Za-z_]+\|>")
+
+
+def strip_reasoning(text):
+    """Remove model reasoning from ``text``, leaving only the answer.
+
+    Raises if the model opened a reasoning block and never closed it (usually
+    max_tokens ran out mid-thought), since then there is no answer to return.
+    """
+    for open_tag, close_tag in _REASONING_TAGS:
+        text = re.sub(open_tag + r".*?" + close_tag, "", text, flags=re.DOTALL)
+        if re.search(open_tag, text):
+            raise RuntimeError(
+                "The model's reasoning block was never closed, so there is no answer "
+                "(max_tokens probably ran out while it was thinking). Increase "
+                "max_tokens, or turn strip_thinking off to see the raw output.")
+        # Templates like DeepSeek R1's put the opening tag in the prompt, so the
+        # output starts mid-thought and contains only the closing tag.
+        m = re.search(close_tag, text)
+        if m:
+            text = text[m.end():]
+    return _CONTROL_TOKEN.sub("", text).strip()
+
+
+class LegacyGemmaGGUFLoader(LLMGGUFLoader):
+    """Old name kept so workflows saved before the rename still load."""
+    DEPRECATED = True
+    RETURN_TYPES = ("GEMMA_MODEL",)
+
+
+class LegacyGemmaGenerate(LLMGenerate):
+    """Old name kept so workflows saved before the rename still load."""
+    DEPRECATED = True
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        types = LLMGenerate.INPUT_TYPES()
+        types["required"]["model"] = ("GEMMA_MODEL",)
+        return types
+
+
 NODE_CLASS_MAPPINGS = {
-    "GemmaGGUFLoader": GemmaGGUFLoader,
-    "GemmaGenerate": GemmaGenerate,
+    "LLMGGUFLoader": LLMGGUFLoader,
+    "LLMGenerate": LLMGenerate,
+    # Deprecated aliases (hidden from the node search menu).
+    "GemmaGGUFLoader": LegacyGemmaGGUFLoader,
+    "GemmaGenerate": LegacyGemmaGenerate,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "GemmaGGUFLoader": "Load Gemma GGUF",
-    "GemmaGenerate": "Gemma Generate Text",
+    "LLMGGUFLoader": "Load LLM GGUF",
+    "LLMGenerate": "LLM Generate Text",
+    "GemmaGGUFLoader": "Load Gemma GGUF (deprecated)",
+    "GemmaGenerate": "Gemma Generate Text (deprecated)",
 }

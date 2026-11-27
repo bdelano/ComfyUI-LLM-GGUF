@@ -6,7 +6,7 @@
   "nodes": [
     {
       "id": 1,
-      "type": "GemmaGGUFLoader",
+      "type": "LLMGGUFLoader",
       "pos": [40, 120],
       "size": [320, 180],
       "flags": {},
@@ -14,36 +14,37 @@
       "mode": 0,
       "inputs": [],
       "outputs": [
-        { "name": "model", "type": "GEMMA_MODEL", "links": [1] }
+        { "name": "model", "type": "LLM_GGUF_MODEL", "links": [1] }
       ],
-      "properties": { "Node name for S&R": "GemmaGGUFLoader" },
+      "properties": { "Node name for S&R": "LLMGGUFLoader" },
       "widgets_values": ["gemma-4-e4b-it-Q4_K_M.gguf", -1, 8192, true, false, "f16"]
     },
     {
       "id": 2,
-      "type": "GemmaGenerate",
+      "type": "LLMGenerate",
       "pos": [400, 120],
       "size": [420, 480],
       "flags": {},
       "order": 1,
       "mode": 0,
       "inputs": [
-        { "name": "model", "type": "GEMMA_MODEL", "link": 1 }
+        { "name": "model", "type": "LLM_GGUF_MODEL", "link": 1 }
       ],
       "outputs": [
         { "name": "text", "type": "STRING", "links": [2] }
       ],
-      "properties": { "Node name for S&R": "GemmaGenerate" },
+      "properties": { "Node name for S&R": "LLMGenerate" },
       "widgets_values": [
         "You are a children's picture-book author. Write warm, vivid prose.",
         "Write two short paragraphs about a fox who finds a lantern in the snow.",
-        512,
+        32000,
         1.0,
         0.95,
         64,
         1.0,
         12345,
         "randomize",
+        true,
         true
       ]
     },
@@ -64,7 +65,7 @@
     }
   ],
   "links": [
-    [1, 1, 0, 2, 0, "GEMMA_MODEL"],
+    [1, 1, 0, 2, 0, "LLM_GGUF_MODEL"],
     [2, 2, 0, 3, 0, "STRING"]
   ],
   "groups": [],
