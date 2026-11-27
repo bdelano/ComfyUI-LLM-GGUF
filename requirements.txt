@@ -1,0 +1,3 @@
+# 0.3.38 is the first release confirmed (by grepping its vendored llama.cpp)
+# to know the gemma4 architecture. See README for GPU (CUDA/Metal) builds.
+llama-cpp-python>=0.3.38

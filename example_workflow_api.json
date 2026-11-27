@@ -1,0 +1,35 @@
+{
+  "1": {
+    "inputs": {
+      "model": "gemma-4-e4b-it-Q4_K_M.gguf",
+      "n_gpu_layers": -1,
+      "n_ctx": 8192,
+      "flash_attn": true
+    },
+    "class_type": "GemmaGGUFLoader",
+    "_meta": {
+      "title": "Load Gemma GGUF"
+    }
+  },
+  "2": {
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "system": "You are a children's picture-book author. Write warm, vivid prose.",
+      "prompt": "Write two short paragraphs about a fox who finds a lantern in the snow.",
+      "max_tokens": 512,
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 64,
+      "repeat_penalty": 1.0,
+      "seed": 12345,
+      "unload_after": true
+    },
+    "class_type": "GemmaGenerate",
+    "_meta": {
+      "title": "Gemma Generate Text"
+    }
+  }
+}
