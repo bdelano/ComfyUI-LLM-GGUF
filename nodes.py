@@ -47,13 +47,15 @@ class GGUFModel:
     on demand.
     """
 
-    def __init__(self, path, name, n_gpu_layers, n_ctx, flash_attn, swa_full, kv_cache_type):
+    def __init__(self, path, name, n_gpu_layers, n_ctx, flash_attn, swa_full, kv_cache_type,
+                 chat_format="auto"):
         self.path = path
         self.name = name
-        self.key = (path, n_gpu_layers, n_ctx, flash_attn, swa_full, kv_cache_type)
+        self.key = (path, n_gpu_layers, n_ctx, flash_attn, swa_full, kv_cache_type, chat_format)
         self.kwargs = dict(n_gpu_layers=n_gpu_layers, n_ctx=n_ctx, flash_attn=flash_attn,
                            swa_full=swa_full)
         self.kv_cache_type = kv_cache_type
+        self.chat_format = chat_format
 
     def get(self):
         if _cache["key"] == self.key and _cache["llm"] is not None:
@@ -83,9 +85,93 @@ class GGUFModel:
             raise RuntimeError(
                 f"Failed to load {self.name} with llama-cpp-python {version}: {msg}. {hint}"
             ) from e
+        llm.chat_format = _resolve_chat_format(llm, self.chat_format, self.name)
         _cache["key"] = self.key
         _cache["llm"] = llm
         return llm
+
+
+def _register_chat_formats():
+    """Prompt formats for GGUFs that don't embed a chat template.
+
+    llama-cpp-python's own fallback for a template-less GGUF is the Llama 2
+    format ("<s>[INST] ... [/INST]"), which a Gemma model only sees as plain
+    text: it echoes "</s>" and degenerates into bracket junk. Its built-in
+    "gemma" format also silently drops the system prompt. These follow the
+    official templates instead.
+    """
+    from llama_cpp import llama_chat_format as lcf
+
+    def turns(messages):
+        system = "\n\n".join((m.get("content") or "").strip()
+                              for m in messages if m["role"] in ("system", "developer"))
+        rest = [m for m in messages if m["role"] not in ("system", "developer")]
+        return system, rest
+
+    @lcf.register_chat_format(CHAT_FORMATS["gemma4"])
+    def gemma4(messages, **kwargs):
+        system, rest = turns(messages)
+        prompt = "<bos>"
+        if system:
+            prompt += f"<|turn>system\n{system}<turn|>\n"
+        for m in rest:
+            role = "model" if m["role"] == "assistant" else "user"
+            prompt += f"<|turn>{role}\n{(m.get('content') or '').strip()}<turn|>\n"
+        # An empty thought channel is how the official template turns
+        # thinking off.
+        prompt += "<|turn>model\n<|channel>thought\n<channel|>"
+        return lcf.ChatFormatterResponse(prompt=prompt, stop=["<turn|>"])
+
+    @lcf.register_chat_format(CHAT_FORMATS["gemma"])
+    def gemma(messages, **kwargs):
+        # Gemma 2/3 have no system role; the official template prepends it to
+        # the first user turn.
+        system, rest = turns(messages)
+        prompt = "<bos>"
+        for i, m in enumerate(rest):
+            role = "model" if m["role"] == "assistant" else "user"
+            content = (m.get("content") or "").strip()
+            if i == 0 and system and role == "user":
+                content = f"{system}\n\n{content}"
+            prompt += f"<start_of_turn>{role}\n{content}<end_of_turn>\n"
+        prompt += "<start_of_turn>model\n"
+        return lcf.ChatFormatterResponse(prompt=prompt, stop=["<end_of_turn>"])
+
+
+# Loader choices -> llama-cpp-python chat_format names. "auto" means the
+# GGUF's embedded template, else a guess from its architecture.
+CHAT_FORMATS = {
+    "auto": None,
+    "gemma4": "comfy-gemma4",
+    "gemma": "comfy-gemma",
+    "chatml": "chatml",
+    "llama-3": "llama-3",
+}
+_formats_registered = False
+
+
+def _resolve_chat_format(llm, choice, name):
+    global _formats_registered
+    if not _formats_registered:
+        _register_chat_formats()
+        _formats_registered = True
+    if choice != "auto":
+        return CHAT_FORMATS[choice]
+    metadata = getattr(llm, "metadata", None) or {}
+    if metadata.get("tokenizer.chat_template"):
+        return llm.chat_format  # llama-cpp-python already chose from the template
+    arch = metadata.get("general.architecture", "")
+    if arch == "gemma4":
+        fmt = "gemma4"
+    elif arch.startswith("gemma"):
+        fmt = "gemma"
+    elif arch == "llama":
+        fmt = "llama-3"
+    else:
+        fmt = "chatml"
+    log.warning("%s has no embedded chat template; using the %s format for its %r "
+                "architecture. Set the loader's chat_format if this is wrong.", name, fmt, arch)
+    return CHAT_FORMATS[fmt]
 
 
 # KV cache element types (llama_cpp module constant names). Quantized V cache
@@ -136,7 +222,13 @@ class LLMGGUFLoader:
                                                     "defaults this on; off uses far less VRAM on Gemma models."}),
                 "kv_cache_type": (list(KV_CACHE_TYPES), {"default": "f16",
                                   "tooltip": "q8_0 roughly halves KV cache VRAM; q8_0/q4_0 need flash_attn."}),
-            }
+            },
+            # Optional so workflows saved before this input existed still validate.
+            "optional": {
+                "chat_format": (list(CHAT_FORMATS), {"default": "auto",
+                                "tooltip": "Prompt format. auto uses the GGUF's embedded chat template, or "
+                                           "picks one from the model's architecture if it has none."}),
+            },
         }
 
     RETURN_TYPES = ("LLM_GGUF_MODEL",)
@@ -144,11 +236,13 @@ class LLMGGUFLoader:
     FUNCTION = "load"
     CATEGORY = "text/llm"
 
-    def load(self, model, n_gpu_layers, n_ctx, flash_attn, swa_full=False, kv_cache_type="f16"):
+    def load(self, model, n_gpu_layers, n_ctx, flash_attn, swa_full=False, kv_cache_type="f16",
+             chat_format="auto"):
         if kv_cache_type != "f16" and not flash_attn:
             raise ValueError("kv_cache_type q8_0/q4_0 requires flash_attn to be enabled.")
         path = folder_paths.get_full_path_or_raise(LLM_FOLDER, model)
-        handle = GGUFModel(path, model, n_gpu_layers, n_ctx, flash_attn, swa_full, kv_cache_type)
+        handle = GGUFModel(path, model, n_gpu_layers, n_ctx, flash_attn, swa_full, kv_cache_type,
+                           chat_format)
         handle.get()  # load now so failures surface on the loader node
         return (handle,)
 
@@ -270,12 +364,12 @@ class _SystemRoleRejected(Exception):
     pass
 
 
-# End-of-turn markers across chat formats, used as stop strings. Many GGUFs
-# (especially fine-tunes) don't flag their end-of-turn token as end-of-
-# generation in their metadata, so llama.cpp would keep generating past the
-# answer into junk. Matching them as text works because special tokens are
-# rendered. "</s>" is deliberately absent: some fine-tunes emit it at the
-# very start of their output, and stopping there would return nothing.
+# End-of-turn markers across chat formats, used as stop strings. llama.cpp
+# already ends generation on most of these tokens by name; this is a safety
+# net for GGUFs whose vocab marks them oddly. Matching them as text works
+# because special tokens are rendered. "</s>" is deliberately absent: a model
+# prompted in the wrong format can write it as plain text at the very start
+# of its output, and stopping there would return nothing.
 END_OF_TURN = [
     "<turn|>",          # Gemma 4
     "<end_of_turn>",    # Gemma 2/3

@@ -26,12 +26,23 @@ new nodes when convenient. Old and new nodes use different model types
   reloads it automatically even though ComfyUI caches the loader node.
 - If the chat template has no system role, the system text is folded into the
   user turn.
+- The loader's `chat_format` (default `auto`) picks the prompt format.
+  `auto` uses the chat template embedded in the GGUF. Many fine-tunes ship
+  **without** one; llama-cpp-python would then silently fall back to the
+  Llama 2 format (`<s>[INST] … [/INST]`), and a Gemma model prompted that way
+  echoes `</s>` and degenerates into bracket junk (`]}]}]}…`). So for a
+  template-less GGUF, `auto` instead picks by architecture: Gemma 4 →
+  `gemma4`, Gemma 2/3 → `gemma`, Llama → `llama-3`, anything else →
+  `chatml`. It logs a warning saying which it chose. The `gemma4` and
+  `gemma` formats are the node's own and match the official templates
+  exactly (Gemma 2/3's system prompt is folded into the first user turn, as
+  the official template does; llama-cpp-python's built-in `gemma` format
+  drops it). Thinking is off in `gemma4` (empty thought channel, as in the
+  official template). Set `chat_format` explicitly if `auto` guesses wrong.
 - Generation always stops at common end-of-turn markers (`<turn|>`,
   `<end_of_turn>`, `<|im_end|>`, `<|eot_id|>`, `<|end|>`, `<|endoftext|>`),
-  even if the GGUF's metadata doesn't flag them as end-of-generation. Many
-  fine-tunes don't, and without this they write their answer, then keep going
-  into repeated junk (e.g. `]}]}]}…`) until `max_tokens`. To make these
-  matches possible, special tokens are always rendered into the text.
+  as a safety net (llama.cpp already stops on most of them by name). To make
+  these matches possible, special tokens are always rendered into the text.
   Control tokens are then removed when `strip_thinking` is on. Hitting
   `max_tokens` logs a warning in the ComfyUI console.
 - `strip_thinking` (default on) removes reasoning from the output text, leaving
