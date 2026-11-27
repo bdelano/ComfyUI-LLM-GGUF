@@ -141,7 +141,7 @@ class GemmaGenerate:
                 "top_p": ("FLOAT", {"default": 0.95, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "top_k": ("INT", {"default": 64, "min": 0, "max": 1000}),
                 "repeat_penalty": ("FLOAT", {"default": 1.0, "min": 0.5, "max": 2.0, "step": 0.01}),
-                "seed": ("INT", {"default": 0, "min": 0, "max": 0xFFFFFFFF}),
+                "seed": ("INT", {"default": 0, "min": 0, "max": 0xFFFFFFFF, "control_after_generate": True}),
                 "unload_after": ("BOOLEAN", {"default": True,
                                              "tooltip": "Free the LLM's VRAM when done so the next image job has room."}),
             },
