@@ -99,6 +99,11 @@ def _register_chat_formats():
     text: it echoes "</s>" and degenerates into bracket junk. Its built-in
     "gemma" format also silently drops the system prompt. These follow the
     official templates instead.
+
+    Each prompt spells out its own "<bos>", so the responses set
+    added_special: otherwise llama-cpp-python tokenizes with add_bos and
+    prepends a second BOS (its "check_double_bos_eos" warning), which
+    degrades the output. Its own Jinja (embedded-template) path does the same.
     """
     from llama_cpp import llama_chat_format as lcf
 
@@ -124,7 +129,7 @@ def _register_chat_formats():
             # An empty thought channel is how the official template turns
             # thinking off.
             prompt += "<|channel>thought\n<channel|>"
-        return lcf.ChatFormatterResponse(prompt=prompt, stop=["<turn|>"])
+        return lcf.ChatFormatterResponse(prompt=prompt, stop=["<turn|>"], added_special=True)
 
     @lcf.register_chat_format(CHAT_FORMATS["gemma"])
     def gemma(messages, **kwargs):
@@ -139,7 +144,7 @@ def _register_chat_formats():
                 content = f"{system}\n\n{content}"
             prompt += f"<start_of_turn>{role}\n{content}<end_of_turn>\n"
         prompt += "<start_of_turn>model\n"
-        return lcf.ChatFormatterResponse(prompt=prompt, stop=["<end_of_turn>"])
+        return lcf.ChatFormatterResponse(prompt=prompt, stop=["<end_of_turn>"], added_special=True)
 
 
 # Per-generation options the node's own chat formatters read. llama-cpp-python
