@@ -28,7 +28,8 @@
       "repeat_penalty": 1.0,
       "seed": 12345,
       "unload_after": true,
-      "strip_thinking": true
+      "strip_thinking": true,
+      "enable_thinking": false
     },
     "class_type": "LLMGenerate",
     "_meta": {

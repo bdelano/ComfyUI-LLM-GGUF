@@ -111,15 +111,19 @@ def _register_chat_formats():
     @lcf.register_chat_format(CHAT_FORMATS["gemma4"])
     def gemma4(messages, **kwargs):
         system, rest = turns(messages)
+        thinking = _generation_options["enable_thinking"]
         prompt = "<bos>"
-        if system:
-            prompt += f"<|turn>system\n{system}<turn|>\n"
+        if thinking or system:
+            # The official template's thinking switch opens the system turn.
+            prompt += "<|turn>system\n" + ("<|think|>\n" if thinking else "") + f"{system}<turn|>\n"
         for m in rest:
             role = "model" if m["role"] == "assistant" else "user"
             prompt += f"<|turn>{role}\n{(m.get('content') or '').strip()}<turn|>\n"
-        # An empty thought channel is how the official template turns
-        # thinking off.
-        prompt += "<|turn>model\n<|channel>thought\n<channel|>"
+        prompt += "<|turn>model\n"
+        if not thinking:
+            # An empty thought channel is how the official template turns
+            # thinking off.
+            prompt += "<|channel>thought\n<channel|>"
         return lcf.ChatFormatterResponse(prompt=prompt, stop=["<turn|>"])
 
     @lcf.register_chat_format(CHAT_FORMATS["gemma"])
@@ -137,6 +141,12 @@ def _register_chat_formats():
         prompt += "<start_of_turn>model\n"
         return lcf.ChatFormatterResponse(prompt=prompt, stop=["<end_of_turn>"])
 
+
+# Per-generation options the node's own chat formatters read. llama-cpp-python
+# gives a chat formatter no way to receive extra per-call options, so
+# LLMGenerate sets these for the duration of one generation (ComfyUI runs one
+# node at a time).
+_generation_options = {"enable_thinking": False}
 
 # Loader choices -> llama-cpp-python chat_format names. "auto" means the
 # GGUF's embedded template, else a guess from its architecture.
@@ -270,6 +280,12 @@ class LLMGenerate:
                 "strip_thinking": ("BOOLEAN", {"default": True,
                                                "tooltip": "Remove reasoning blocks (<think>...</think>, Gemma 4's "
                                                           "thought channel, ...) from the output text."}),
+                # Last, so canvas workflows saved before it existed keep their
+                # positional widget values.
+                "enable_thinking": ("BOOLEAN", {"default": False,
+                                                "tooltip": "Let the model reason before answering (slower, uses "
+                                                           "max_tokens). Applies to the node's own Gemma 4 format, "
+                                                           "i.e. Gemma 4 GGUFs without an embedded chat template."}),
             },
             "hidden": {"unique_id": "UNIQUE_ID"},
         }
@@ -282,7 +298,7 @@ class LLMGenerate:
 
     def generate(self, model, system, prompt, max_tokens, temperature, top_p,
                  top_k, repeat_penalty, seed, unload_after, strip_thinking=True,
-                 unique_id=None):
+                 enable_thinking=False, unique_id=None):
         self._unique_id = unique_id
         llm = model.get()
 
@@ -293,6 +309,7 @@ class LLMGenerate:
         # reasoning markers strip_thinking relies on are special tokens too.
         restore = _render_special_tokens(llm)
         params["stop"] = END_OF_TURN
+        _generation_options["enable_thinking"] = bool(enable_thinking)
         try:
             try:
                 text = self._run(llm, self._messages(system, prompt, True), params)
@@ -300,6 +317,7 @@ class LLMGenerate:
                 # Some chat templates have no system role; fold it into the user turn.
                 text = self._run(llm, self._messages(system, prompt, False), params)
         finally:
+            _generation_options["enable_thinking"] = False
             if restore:
                 restore()
             if unload_after:

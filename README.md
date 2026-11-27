@@ -37,8 +37,15 @@ new nodes when convenient. Old and new nodes use different model types
   `gemma` formats are the node's own and match the official templates
   exactly (Gemma 2/3's system prompt is folded into the first user turn, as
   the official template does; llama-cpp-python's built-in `gemma` format
-  drops it). Thinking is off in `gemma4` (empty thought channel, as in the
-  official template). Set `chat_format` explicitly if `auto` guesses wrong.
+  drops it). Thinking in `gemma4` follows the generate node's
+  `enable_thinking` (below). Set `chat_format` explicitly if `auto` guesses wrong.
+- `enable_thinking` (default off) lets the model reason before answering.
+  It applies to the node's own `gemma4` format, used for Gemma 4 GGUFs without
+  an embedded chat template: on adds Gemma 4's `<|think|>` switch, and off
+  ends the prompt with an empty thought channel, exactly as the official
+  template does. Reasoning is slower and counts toward `max_tokens`; with
+  `strip_thinking` on, it's removed from the output. GGUFs that have their own
+  template keep that template's default behavior.
 - Generation always stops at common end-of-turn markers (`<turn|>`,
   `<end_of_turn>`, `<|im_end|>`, `<|eot_id|>`, `<|end|>`, `<|endoftext|>`),
   as a safety net (llama.cpp already stops on most of them by name). To make
