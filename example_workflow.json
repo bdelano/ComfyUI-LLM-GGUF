@@ -8,7 +8,7 @@
       "id": 1,
       "type": "GemmaGGUFLoader",
       "pos": [40, 120],
-      "size": [320, 130],
+      "size": [320, 180],
       "flags": {},
       "order": 0,
       "mode": 0,
@@ -17,7 +17,7 @@
         { "name": "model", "type": "GEMMA_MODEL", "links": [1] }
       ],
       "properties": { "Node name for S&R": "GemmaGGUFLoader" },
-      "widgets_values": ["gemma-4-e4b-it-Q4_K_M.gguf", -1, 8192, true]
+      "widgets_values": ["gemma-4-e4b-it-Q4_K_M.gguf", -1, 8192, true, false, "f16"]
     },
     {
       "id": 2,

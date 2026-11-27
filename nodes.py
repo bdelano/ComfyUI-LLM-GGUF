@@ -45,11 +45,13 @@ class GemmaModel:
     on demand.
     """
 
-    def __init__(self, path, name, n_gpu_layers, n_ctx, flash_attn):
+    def __init__(self, path, name, n_gpu_layers, n_ctx, flash_attn, swa_full, kv_cache_type):
         self.path = path
         self.name = name
-        self.key = (path, n_gpu_layers, n_ctx, flash_attn)
-        self.kwargs = dict(n_gpu_layers=n_gpu_layers, n_ctx=n_ctx, flash_attn=flash_attn)
+        self.key = (path, n_gpu_layers, n_ctx, flash_attn, swa_full, kv_cache_type)
+        self.kwargs = dict(n_gpu_layers=n_gpu_layers, n_ctx=n_ctx, flash_attn=flash_attn,
+                           swa_full=swa_full)
+        self.kv_cache_type = kv_cache_type
 
     def get(self):
         if _cache["key"] == self.key and _cache["llm"] is not None:
@@ -60,19 +62,33 @@ class GemmaModel:
         # Make room: evict whatever diffusion/TTS models ComfyUI has resident.
         mm.unload_all_models()
         mm.soft_empty_cache()
+        kv_type = getattr(llama_cpp, KV_CACHE_TYPES[self.kv_cache_type])
         try:
-            llm = llama_cpp.Llama(model_path=self.path, verbose=False, **self.kwargs)
+            llm = llama_cpp.Llama(model_path=self.path, verbose=False,
+                                  type_k=kv_type, type_v=kv_type, **self.kwargs)
         except Exception as e:
             version = getattr(llama_cpp, "__version__", "unknown")
+            msg = str(e)
+            if "llama_context" in msg:
+                # Weights loaded fine; allocating the KV cache/compute buffers failed.
+                hint = ("The model weights loaded, but the context (KV cache) could not be "
+                        "allocated, which is usually out of VRAM. Try a smaller n_ctx, "
+                        "swa_full off, kv_cache_type q8_0 (needs flash_attn), or lower "
+                        "n_gpu_layers to keep some layers on the CPU.")
+            else:
+                hint = ("If the architecture is unknown (e.g. gemma4), upgrade "
+                        "llama-cpp-python to >=0.3.38 or rebuild it against a newer llama.cpp.")
             raise RuntimeError(
-                f"Failed to load {self.name} with llama-cpp-python {version}: {e}. "
-                "If the architecture is unknown (e.g. gemma4), upgrade llama-cpp-python "
-                "to >=0.3.38 or rebuild it against a newer llama.cpp."
+                f"Failed to load {self.name} with llama-cpp-python {version}: {msg}. {hint}"
             ) from e
         _cache["key"] = self.key
         _cache["llm"] = llm
         return llm
 
+
+# KV cache element types (llama_cpp module constant names). Quantized V cache
+# requires flash attention.
+KV_CACHE_TYPES = {"f16": "GGML_TYPE_F16", "q8_0": "GGML_TYPE_Q8_0", "q4_0": "GGML_TYPE_Q4_0"}
 
 # Single-slot cache: one LLM resident at a time keeps VRAM predictable.
 _cache = {"key": None, "llm": None}
@@ -113,6 +129,11 @@ class GemmaGGUFLoader:
                                          "tooltip": "-1 offloads every layer to the GPU."}),
                 "n_ctx": ("INT", {"default": 8192, "min": 512, "max": 262144, "step": 512}),
                 "flash_attn": ("BOOLEAN", {"default": True}),
+                "swa_full": ("BOOLEAN", {"default": False,
+                                         "tooltip": "Full-size sliding-window-attention cache. llama.cpp "
+                                                    "defaults this on; off uses far less VRAM on Gemma models."}),
+                "kv_cache_type": (list(KV_CACHE_TYPES), {"default": "f16",
+                                  "tooltip": "q8_0 roughly halves KV cache VRAM; q8_0/q4_0 need flash_attn."}),
             }
         }
 
@@ -121,9 +142,11 @@ class GemmaGGUFLoader:
     FUNCTION = "load"
     CATEGORY = "text/gemma"
 
-    def load(self, model, n_gpu_layers, n_ctx, flash_attn):
+    def load(self, model, n_gpu_layers, n_ctx, flash_attn, swa_full=False, kv_cache_type="f16"):
+        if kv_cache_type != "f16" and not flash_attn:
+            raise ValueError("kv_cache_type q8_0/q4_0 requires flash_attn to be enabled.")
         path = folder_paths.get_full_path_or_raise(LLM_FOLDER, model)
-        handle = GemmaModel(path, model, n_gpu_layers, n_ctx, flash_attn)
+        handle = GemmaModel(path, model, n_gpu_layers, n_ctx, flash_attn, swa_full, kv_cache_type)
         handle.get()  # load now so failures surface on the loader node
         return (handle,)
 

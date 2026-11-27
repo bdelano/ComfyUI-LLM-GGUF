@@ -72,6 +72,7 @@ compiles for every GPU architecture. Add `-v` to watch progress.
 | `cmake: not found` | `sudo apt install cmake` / `brew install cmake` / `pip install cmake` |
 | macOS: compiler or SDK errors | `xcode-select --install` |
 | Builds fine but ComfyUI says it isn't installed | You installed into a different Python. Use ComfyUI's own `venv/bin/pip` (or `python_embeded\python.exe -m pip` on Windows portable). |
+| `Failed to create llama_context` | The weights loaded, but the KV cache didn't fit, which is usually out of VRAM. Fixes, cheapest first: leave `swa_full` **off** (llama.cpp turns it on by default, which allocates a full-length cache on every layer); set `kv_cache_type` to `q8_0` (needs `flash_attn`); lower `n_ctx`; lower `n_gpu_layers` to keep some layers on the CPU. A 31B model at Q6_K is about 25 GB of weights before any cache, so on a 24 GB card use a smaller quant (Q4_K_M) or partial offload. |
 | Model fails to load with an unknown-architecture error | `llama-cpp-python` is older than 0.3.38. Rebuild with `--no-cache-dir` so pip doesn't reuse an old wheel. |
 
 ## Example workflows

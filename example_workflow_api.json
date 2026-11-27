@@ -4,7 +4,9 @@
       "model": "gemma-4-e4b-it-Q4_K_M.gguf",
       "n_gpu_layers": -1,
       "n_ctx": 8192,
-      "flash_attn": true
+      "flash_attn": true,
+      "swa_full": false,
+      "kv_cache_type": "f16"
     },
     "class_type": "GemmaGGUFLoader",
     "_meta": {
