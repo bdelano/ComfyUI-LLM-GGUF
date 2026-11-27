@@ -26,6 +26,14 @@ new nodes when convenient. Old and new nodes use different model types
   reloads it automatically even though ComfyUI caches the loader node.
 - If the chat template has no system role, the system text is folded into the
   user turn.
+- Generation always stops at common end-of-turn markers (`<turn|>`,
+  `<end_of_turn>`, `<|im_end|>`, `<|eot_id|>`, `<|end|>`, `<|endoftext|>`),
+  even if the GGUF's metadata doesn't flag them as end-of-generation. Many
+  fine-tunes don't, and without this they write their answer, then keep going
+  into repeated junk (e.g. `]}]}]}…`) until `max_tokens`. To make these
+  matches possible, special tokens are always rendered into the text.
+  Control tokens are then removed when `strip_thinking` is on. Hitting
+  `max_tokens` logs a warning in the ComfyUI console.
 - `strip_thinking` (default on) removes reasoning from the output text, leaving
   only the answer. It recognizes Gemma 4's thought channel
   (`<|channel>thought … <channel|>`), `<think>…</think>` (Qwen3, DeepSeek R1,
@@ -34,9 +42,8 @@ new nodes when convenient. Old and new nodes use different model types
   out of `max_tokens` before closing it, the node raises an error instead of
   returning half a thought, so raise `max_tokens`. Gemma 4 marks reasoning only with
   special tokens, which llama-cpp-python normally drops from the text, so the
-  node renders special tokens for that call, then strips them. With
-  `strip_thinking` off, a thinking Gemma 4 model's reasoning runs straight
-  into the answer with no markers. The `llm_gguf.chunk` websocket events
+  node renders them (see above) and then strips them. With `strip_thinking`
+  off, you get the raw text, reasoning and markers included. The `llm_gguf.chunk` websocket events
   (`{node, prompt_id, chunk}`, sent only to the client that queued the prompt)
   always carry the raw text, reasoning included.
 

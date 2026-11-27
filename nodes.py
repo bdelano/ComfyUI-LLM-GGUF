@@ -194,7 +194,11 @@ class LLMGenerate:
 
         params = dict(max_tokens=max_tokens, temperature=temperature, top_p=top_p,
                       top_k=top_k, repeat_penalty=repeat_penalty, seed=seed)
-        restore = _render_special_tokens(llm) if strip_thinking else None
+        # Always render special tokens: the END_OF_TURN stop strings below
+        # can only match if end-of-turn tokens appear in the text, and the
+        # reasoning markers strip_thinking relies on are special tokens too.
+        restore = _render_special_tokens(llm)
+        params["stop"] = END_OF_TURN
         try:
             try:
                 text = self._run(llm, self._messages(system, prompt, True), params)
@@ -209,6 +213,9 @@ class LLMGenerate:
 
         if strip_thinking:
             text = strip_reasoning(text)
+        else:
+            # Raw output: reasoning (and its markers) kept, just trimmed.
+            text = text.strip()
 
         return {"ui": {"text": [text]}, "result": (text,)}
 
@@ -230,7 +237,13 @@ class LLMGenerate:
             stream = llm.create_chat_completion(messages=messages, stream=True, **params)
             for chunk in stream:
                 mm.throw_exception_if_processing_interrupted()
-                delta = chunk["choices"][0].get("delta", {}).get("content")
+                choice = chunk["choices"][0]
+                if choice.get("finish_reason") == "length":
+                    log.warning(
+                        "Generation hit max_tokens (%s) and was cut off. If the output "
+                        "ends in repeated junk, the model probably never emitted a stop "
+                        "token it was trained on.", params["max_tokens"])
+                delta = choice.get("delta", {}).get("content")
                 if not delta:
                     continue
                 parts.append(delta)
@@ -255,6 +268,23 @@ class LLMGenerate:
 
 class _SystemRoleRejected(Exception):
     pass
+
+
+# End-of-turn markers across chat formats, used as stop strings. Many GGUFs
+# (especially fine-tunes) don't flag their end-of-turn token as end-of-
+# generation in their metadata, so llama.cpp would keep generating past the
+# answer into junk. Matching them as text works because special tokens are
+# rendered. "</s>" is deliberately absent: some fine-tunes emit it at the
+# very start of their output, and stopping there would return nothing.
+END_OF_TURN = [
+    "<turn|>",          # Gemma 4
+    "<end_of_turn>",    # Gemma 2/3
+    "<|im_end|>",       # ChatML (Qwen, many fine-tunes)
+    "<|eot_id|>",       # Llama 3
+    "<|end|>",          # Phi
+    "<|endoftext|>",
+    "<|end_of_text|>",
+]
 
 
 def _render_special_tokens(llm):
